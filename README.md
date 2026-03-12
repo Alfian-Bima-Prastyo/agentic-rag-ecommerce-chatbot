@@ -3,6 +3,12 @@
 Customer service chatbot for e-commerce in Bahasa Indonesia — hybrid RAG, 
 intent routing, and tool calling with a local LLM.
 
+## Screenshots
+
+![FAQ Query](docs/screenshot_faq.png)
+
+![Agentic Tool Call](docs/screenshot_agentic.png)
+
 ---
 
 ## Pipeline Overview
