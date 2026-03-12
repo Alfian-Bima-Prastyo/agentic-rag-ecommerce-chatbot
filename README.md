@@ -5,9 +5,9 @@ intent routing, and tool calling with a local LLM.
 
 ## Screenshots
 
-![FAQ Query]()
+![FAQ Query](screenshots/screnshot_1.png)
 
-![Agentic Tool Call](docs/screenshot_agentic.png)
+![Agentic Tool Call](screenshots/screnshot_2.png)
 
 ---
 
