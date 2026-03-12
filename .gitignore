@@ -1,0 +1,12 @@
+# Cache
+doc_embeddings.npy
+__pycache__/
+*.pyc
+
+# Chainlit internals
+.chainlit/
+.files/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
