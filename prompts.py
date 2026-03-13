@@ -36,7 +36,13 @@ Input : "voucher ga bisa dipake"
 Input : "kebijakan return elektronik"
 {"intent": "RETURN_POLICY", "extracted": "electronics"}
 Input : "seller ga respon 3 hari, minta manusia"
-{"intent": "ESCALATE", "extracted": "seller tidak merespon 3 hari"}"""
+{"intent": "ESCALATE", "extracted": "seller tidak merespon 3 hari"}
+Input : "mau return barang"
+{"intent": "RETURN_POLICY", "extracted": ""}
+Input : "cara return barang"
+{"intent": "RETURN_POLICY", "extracted": ""}
+Input : "mau kembalikan barang"
+{"intent": "RETURN_POLICY", "extracted": ""}"""
 
 RERANK_PROMPT = """You are a reranking system for e-commerce customer service.
 Select the MOST relevant document for this query.
@@ -49,6 +55,8 @@ Reply ONLY with the document ID (example: DOC_B2). No explanation."""
 GENERATION_PROMPT = """Kamu adalah customer service assistant e-commerce yang ramah dan membantu.
 Jawab pertanyaan user dalam Bahasa Indonesia yang natural berdasarkan dokumen referensi.
 PENTING: Gunakan HANYA Bahasa Indonesia. Dilarang menggunakan bahasa lain apapun.
+Saat menyebut nama wilayah, gunakan nama Bahasa Indonesia yang benar: "Jawa" bukan "Java".
+Jika pertanyaan adalah follow-up atau merujuk ke percakapan sebelumnya, gunakan konteks history untuk memahami maksud user.
 Jangan mengarang informasi yang tidak ada di dokumen.
 Dokumen referensi:
 {context}
@@ -59,6 +67,13 @@ Berikan respons yang natural dalam Bahasa Indonesia berdasarkan hasil tool berik
 PENTING: Gunakan HANYA Bahasa Indonesia. Dilarang menggunakan bahasa lain apapun.
 Pertanyaan user: {query}
 Hasil tool: {tool_result}"""
+
+CLARIFICATION_PROMPT = """Kamu adalah customer service assistant e-commerce.
+User ingin tahu kebijakan return tapi belum menyebutkan kategori produk.
+Tanya balik dengan sopan dalam Bahasa Indonesia.
+Balas HANYA dengan satu pertanyaan singkat, tanpa penjelasan tambahan.
+Contoh: "Boleh saya tahu kategori produknya? (elektronik, fashion, makanan, atau lainnya)"
+"""
 
 GREETING_WORDS = {"halo", "hai", "hi", "hello", "hei"}
 

@@ -11,7 +11,7 @@ import torch
 import ollama
 import chainlit as cl
 from knowledge_base import KNOWLEDGE_BASE, ORDERS_DB, TRACKING_DB, RETURN_POLICY_DB
-from prompts import REWRITE_PROMPT, ROUTER_PROMPT, RERANK_PROMPT, GENERATION_PROMPT, AGENTIC_PROMPT, SLANG_DICT, GREETING_WORDS
+from prompts import REWRITE_PROMPT, ROUTER_PROMPT, RERANK_PROMPT, GENERATION_PROMPT, AGENTIC_PROMPT, CLARIFICATION_PROMPT, SLANG_DICT, GREETING_WORDS
 
 @cl.cache
 def load_resources():
@@ -140,6 +140,16 @@ def track_shipment(tracking_number):
                 "location": t["location"], "status": t["status"], "eta": t["eta"]}
     return {"success": False, "message": f"Nomor resi {tn} tidak ditemukan."}
 
+def generate_agentic_answer(query, tool_result):
+    prompt = AGENTIC_PROMPT.format(
+        query=query,
+        tool_result=json.dumps(tool_result, ensure_ascii=False)
+    )
+    r = ollama.chat(model="qwen2.5:7b-instruct",
+                    messages=[{"role": "user", "content": prompt}],
+                    options={"temperature": 0.3})
+    return r['message']['content'].strip()
+
 def get_return_policy(category):
     policy = RETURN_POLICY_DB.get(category.lower(), RETURN_POLICY_DB["default"])
     return {"success": True, "category": category, "policy": policy}
@@ -151,8 +161,9 @@ def escalate_to_human(reason):
 
 def build_prompt(intent, raw_query, translated, extracted):
     """Resolve intent to prompt string before streaming starts."""
-    doc_info         = ""
-    tool_result_str  = ""
+    doc_info        = ""
+    tool_result_str = ""
+    confidence      = None
 
     if intent == "CHECK_ORDER" and extracted and any(c.isdigit() for c in extracted):
         tool_result     = check_order_status(extracted)
@@ -202,12 +213,16 @@ def build_prompt(intent, raw_query, translated, extracted):
         source          = "rag_pipeline"
         tool_result_str = f"Candidates: {[c[0] for c in candidates]}\nBest doc: {best_doc}"
 
-    return prompt, source, doc_info, tool_result_str
+        confidence = next((score for doc_id, score in candidates if doc_id == best_doc), None)
+
+
+    return prompt, source, doc_info, tool_result_str, confidence
 
 
 # Chainlit App
 @cl.on_chat_start
 async def on_chat_start():
+    cl.user_session.set("awaiting_clarification", False)
     cl.user_session.set("history", [])
     await cl.Message(
         content=(
@@ -231,8 +246,31 @@ async def on_message(message: cl.Message):
         await cl.Message(content="Halo! Ada yang bisa saya bantu? 😊").send()
         return
 
-    # ambil history dari session
+    # get history from session
     history = cl.user_session.get("history")
+
+    # handle clarification response
+    if cl.user_session.get("awaiting_clarification"):
+        category = raw_query.lower()
+        if any(w in category for w in ["elektronik", "electronic", "gadget", "hp", "laptop"]):
+            category = "electronics"
+        elif any(w in category for w in ["fashion", "baju", "pakaian", "sepatu"]):
+            category = "fashion"
+        elif any(w in category for w in ["makanan", "food", "minuman"]):
+            category = "food"
+        else:
+            category = "default"
+
+        cl.user_session.set("awaiting_clarification", False)
+        tool_result = get_return_policy(category)
+        answer = generate_agentic_answer(raw_query, tool_result)
+        await cl.Message(content=answer).send()
+
+        history = cl.user_session.get("history")
+        history.append({"role": "user", "content": raw_query})
+        history.append({"role": "assistant", "content": answer})
+        cl.user_session.set("history", history[-6:])
+        return
 
     # Preprocessing
     async with cl.Step(name="Preprocessing Query...") as step1:
@@ -252,9 +290,22 @@ async def on_message(message: cl.Message):
         extracted     = intent_result.get("extracted", "")
         step2.output  = f"**Intent:** `{intent}`  |  **Extracted:** `{extracted or '-'}`"
 
+    if intent == "RETURN_POLICY" and not extracted:
+        r = ollama.chat(
+            model="qwen2.5:7b-instruct",
+            messages=[{"role": "system", "content": CLARIFICATION_PROMPT},
+                    {"role": "user", "content": raw_query}],
+            options={"temperature": 0.3}
+        )
+        clarification = r['message']['content'].strip()
+        cl.user_session.set("awaiting_clarification", True)
+        await cl.Message(content=clarification).send()
+        return
+
+
     # Build prompt (retrieve and tool call)
     async with cl.Step(name="Executing Pipeline...") as step3:
-        prompt, source, doc_info, tool_result_str = build_prompt(
+        prompt, source, doc_info, tool_result_str, confidence = build_prompt(
             intent, raw_query, translated, extracted
         )
         if doc_info:
@@ -283,10 +334,20 @@ async def on_message(message: cl.Message):
 
     # attach source after stream (FAQ only)
     if doc_info:
+        confidence_str = f"{confidence:.0%}" if confidence is not None else "-"
         msg.elements = [
+            # cl.Text(
+            #     name="Docs Source",
+            #     content=f"**Dokumen:** {doc_info}\n\n**Source:** `{source}`",
+            #     display="inline"
+            # )
             cl.Text(
                 name="Docs Source",
-                content=f"**Dokumen:** {doc_info}\n\n**Source:** `{source}`",
+                content=(
+                    f"**Dokumen:** {doc_info}\n\n"
+                    f"**Confidence:** {confidence_str}\n\n"
+                    f"**Source:** `{source}`"
+                ),
                 display="inline"
             )
         ]
