@@ -10,8 +10,19 @@ from sentence_transformers import SentenceTransformer
 import torch
 import ollama
 import chainlit as cl
+import logging
 from knowledge_base import KNOWLEDGE_BASE, ORDERS_DB, TRACKING_DB, RETURN_POLICY_DB
 from prompts import REWRITE_PROMPT, ROUTER_PROMPT, RERANK_PROMPT, GENERATION_PROMPT, AGENTIC_PROMPT, CLARIFICATION_PROMPT, SLANG_DICT, GREETING_WORDS
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
+file_handler = logging.FileHandler("chatbot.log", encoding='utf-8')
+file_handler.setLevel(logging.INFO)
+file_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+
+logger.addHandler(file_handler)
+logger.propagate = False
 
 @cl.cache
 def load_resources():
@@ -39,7 +50,6 @@ def load_resources():
 
 embedding_model, doc_ids, doc_texts, doc_embs, bm25 = load_resources()
 
-
 # Pipeline Functions
 def is_greeting(text: str) -> bool:
     text_clean = text.lower().strip().rstrip("!").rstrip(".")
@@ -64,17 +74,39 @@ def normalize_slang(text):
             result.append(replacement)
     return ' '.join(result)
 
+def call_ollama(messages, temperature=0):
+    try:
+        r = ollama.chat(
+            model="qwen2.5:7b-instruct",
+            messages=messages,
+            options={"temperature": temperature}
+        )
+        return r['message']['content'].strip()
+    except ollama.ResponseError as e:
+        logger.error(f"Ollama response error: {e}")
+        return None
+    except Exception as e:
+        logger.error(f"Ollama connection error: {e}")
+        return None
+
 def rewrite_query(text):
-    r = ollama.chat(model="qwen2.5:7b-instruct",
-                    messages=[{"role": "system", "content": REWRITE_PROMPT},
-                               {"role": "user",   "content": text}],
-                    options={"temperature": 0})
-    return r['message']['content'].strip()
+    result = call_ollama(
+        messages=[{"role": "system", "content": REWRITE_PROMPT},
+                  {"role": "user", "content": text}]
+    )
+    if result is None:
+        logger.warning("Rewrite failed — using original query")
+        return text
+    logger.info(f"Query rewritten: '{text}' -> '{result}'")
+    return result
 
 def translate_to_english(text):
     try:
-        return GoogleTranslator(source='id', target='en').translate(text)
-    except:
+        result = GoogleTranslator(source='id', target='en').translate(text)
+        logger.info(f"Translated: '{text}' -> '{result}'")
+        return result
+    except Exception as e:
+        logger.error(f"Translation failed: {e}")
         return text
 
 def cosine_sim(a, b):
@@ -104,24 +136,29 @@ def rerank(query_original, candidates, query_translated=""):
         query_translated=query_translated,
         candidates="\n\n".join(texts)
     )
-    r = ollama.chat(model="qwen2.5:7b-instruct",
-                    messages=[{"role": "user", "content": prompt}],
-                    options={"temperature": 0})
-    raw = r['message']['content'].strip()
+    raw = call_ollama(messages=[{"role": "user", "content": prompt}])
+    if raw is None:
+        logger.warning("Rerank failed — using top candidate")
+        return candidates[0][0]
     for doc_id in KNOWLEDGE_BASE:
         if doc_id in raw:
             return doc_id
     return candidates[0][0]
 
 def route_intent(query):
-    r = ollama.chat(model="qwen2.5:7b-instruct",
-                    messages=[{"role": "system", "content": ROUTER_PROMPT},
-                               {"role": "user",   "content": query}],
-                    options={"temperature": 0})
-    raw = r['message']['content'].strip()
+    raw = call_ollama(
+        messages=[{"role": "system", "content": ROUTER_PROMPT},
+                  {"role": "user", "content": query}]
+    )
+    if raw is None:
+        logger.warning("Routing failed — fallback to FAQ")
+        return {"intent": "FAQ", "extracted": ""}
     try:
-        return json.loads(raw.replace("```json","").replace("```","").strip())
-    except:
+        result = json.loads(raw.replace("```json","").replace("```","").strip())
+        logger.info(f"Intent routed: {result}")
+        return result
+    except Exception as e:
+        logger.warning(f"Intent parse failed, fallback to FAQ: {e}")
         return {"intent": "FAQ", "extracted": ""}
 
 def check_order_status(order_id):
@@ -130,6 +167,7 @@ def check_order_status(order_id):
         o = ORDERS_DB[order_id]
         return {"success": True, "order_id": order_id, "status": o["status"],
                 "item": o["item"], "seller": o["seller"], "date": o["date"]}
+    logger.warning(f"Order not found: {order_id}")
     return {"success": False, "message": f"Order {order_id} tidak ditemukan."}
 
 def track_shipment(tracking_number):
@@ -138,6 +176,7 @@ def track_shipment(tracking_number):
         t = TRACKING_DB[tn]
         return {"success": True, "tracking_number": tn,
                 "location": t["location"], "status": t["status"], "eta": t["eta"]}
+    logger.warning(f"Tracking number not found: {tn}")
     return {"success": False, "message": f"Nomor resi {tn} tidak ditemukan."}
 
 def generate_agentic_answer(query, tool_result):
@@ -214,7 +253,7 @@ def build_prompt(intent, raw_query, translated, extracted):
         tool_result_str = f"Candidates: {[c[0] for c in candidates]}\nBest doc: {best_doc}"
 
         confidence = next((score for doc_id, score in candidates if doc_id == best_doc), None)
-
+        logger.info(f"Best doc: {best_doc} | Confidence: {confidence:.2f}")  
 
     return prompt, source, doc_info, tool_result_str, confidence
 
@@ -245,7 +284,8 @@ async def on_message(message: cl.Message):
     if is_greeting(raw_query):
         await cl.Message(content="Halo! Ada yang bisa saya bantu? 😊").send()
         return
-
+    
+    logger.info(f"Incoming query: '{raw_query}'")
     # get history from session
     history = cl.user_session.get("history")
 
@@ -262,6 +302,7 @@ async def on_message(message: cl.Message):
             category = "default"
 
         cl.user_session.set("awaiting_clarification", False)
+        logger.info(f"Clarification resolved — category: {category}")
         tool_result = get_return_policy(category)
         answer = generate_agentic_answer(raw_query, tool_result)
         await cl.Message(content=answer).send()
@@ -291,6 +332,7 @@ async def on_message(message: cl.Message):
         step2.output  = f"**Intent:** `{intent}`  |  **Extracted:** `{extracted or '-'}`"
 
     if intent == "RETURN_POLICY" and not extracted:
+        logger.info("Clarification triggered — awaiting category")
         r = ollama.chat(
             model="qwen2.5:7b-instruct",
             messages=[{"role": "system", "content": CLARIFICATION_PROMPT},
@@ -302,8 +344,8 @@ async def on_message(message: cl.Message):
         await cl.Message(content=clarification).send()
         return
 
-
-    # Build prompt (retrieve and tool call)
+    logger.info(f"Intent: {intent} | Extracted: '{extracted}'")
+    
     async with cl.Step(name="Executing Pipeline...") as step3:
         prompt, source, doc_info, tool_result_str, confidence = build_prompt(
             intent, raw_query, translated, extracted
@@ -321,26 +363,26 @@ async def on_message(message: cl.Message):
     await msg.send()
 
     full_response = ""
-    stream = ollama.chat(
-        model="qwen2.5:7b-instruct",
-        messages=history + [{"role": "user", "content": prompt}],
-        options={"temperature": 0.3},
-        stream=True
-    )
-    for chunk in stream:
-        token = chunk['message']['content']
-        full_response += token
-        await msg.stream_token(token)
+    try :
+        stream = ollama.chat(
+            model="qwen2.5:7b-instruct",
+            messages=history + [{"role": "user", "content": prompt}],
+            options={"temperature": 0.3},
+            stream=True
+        )
+        for chunk in stream:
+            token = chunk['message']['content']
+            full_response += token
+            await msg.stream_token(token)
+    except Exception as e:
+        logger.error(f"Streaming failed: {e}")
+        await cl.Message(content="Maaf, terjadi gangguan. Silakan coba lagi.").send()
+        return
 
     # attach source after stream (FAQ only)
     if doc_info:
         confidence_str = f"{confidence:.0%}" if confidence is not None else "-"
         msg.elements = [
-            # cl.Text(
-            #     name="Docs Source",
-            #     content=f"**Dokumen:** {doc_info}\n\n**Source:** `{source}`",
-            #     display="inline"
-            # )
             cl.Text(
                 name="Docs Source",
                 content=(
