@@ -29,6 +29,16 @@ User Input (Bahasa Indonesia, slang)
     ↓
 Response (Bahasa Indonesia)
 ```
+## Features
+
+- **Hybrid search** — weighted combination of vector similarity (70%) and BM25 (30%)
+- **Conversation history** — retains last 3 turns for follow-up queries
+- **Confidence score** — retrieval score displayed per FAQ response
+- **Multi-turn clarification** — asks for product category when return policy query is ambiguous
+- **Response streaming** — token-by-token output
+- **Error handling** — graceful fallback for Ollama timeout and translation failure
+- **Structured logging** — logs to `chatbot.log` with INFO/WARNING/ERROR levels
+---
 
 ## Tech Stack
 
@@ -87,6 +97,7 @@ Evaluated on 14 test cases covering all intent types.
 ├── app.py              # Chainlit app, pipeline logic, tool functions
 ├── knowledge_base.py   # Knowledge base and dummy databases
 ├── prompts.py          # All LLM prompts, slang dictionary, greeting words
+├── tests/              # Unit tests (pytest)
 ├── requirements.txt
 ├── chainlit.md         # Chainlit welcome message config
 └── README.md
