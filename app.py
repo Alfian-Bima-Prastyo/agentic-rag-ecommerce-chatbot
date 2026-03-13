@@ -22,7 +22,6 @@ def load_resources():
     doc_ids_  = list(KNOWLEDGE_BASE.keys())
     doc_texts_ = [v['content'] for v in KNOWLEDGE_BASE.values()]
 
-    # Cache embeddings to disk and delete doc_embeddings.npy if any changes
     CACHE_FILE = "doc_embeddings.npy"
     if os.path.exists(CACHE_FILE):
         print("Loading embeddings from cache...")
@@ -42,8 +41,6 @@ embedding_model, doc_ids, doc_texts, doc_embs, bm25 = load_resources()
 
 
 # Pipeline Functions
-
-# Greeting Handler
 def is_greeting(text: str) -> bool:
     text_clean = text.lower().strip().rstrip("!").rstrip(".")
     words = text_clean.split()
@@ -211,7 +208,7 @@ def build_prompt(intent, raw_query, translated, extracted):
 # Chainlit App
 @cl.on_chat_start
 async def on_chat_start():
-   # greeting shortcut
+    cl.user_session.set("history", [])
     await cl.Message(
         content=(
             "👋 Halo! Saya adalah **CS Chatbot** untuk e-commerce.\n\n"
@@ -225,14 +222,17 @@ async def on_chat_start():
         )
     ).send()
 
-
 @cl.on_message
 async def on_message(message: cl.Message):
     raw_query = message.content
 
+    # greeting shortcut
     if is_greeting(raw_query):
         await cl.Message(content="Halo! Ada yang bisa saya bantu? 😊").send()
         return
+
+    # ambil history dari session
+    history = cl.user_session.get("history")
 
     # Preprocessing
     async with cl.Step(name="Preprocessing Query...") as step1:
@@ -245,7 +245,7 @@ async def on_message(message: cl.Message):
             f"**Translated:** {translated}"
         )
 
-    # Routing 
+    # Routing
     async with cl.Step(name="Routing Intent...") as step2:
         intent_result = route_intent(raw_query)
         intent        = intent_result.get("intent", "FAQ")
@@ -265,20 +265,22 @@ async def on_message(message: cl.Message):
         else:
             step3.output = f"**Tool:** `{source}`\n```json\n{tool_result_str}\n```"
 
-    # Stream response
+    # stream response
     msg = cl.Message(content="")
     await msg.send()
 
+    full_response = ""
     stream = ollama.chat(
         model="qwen2.5:7b-instruct",
-        messages=[{"role": "user", "content": prompt}],
+        messages=history + [{"role": "user", "content": prompt}],
         options={"temperature": 0.3},
         stream=True
     )
     for chunk in stream:
         token = chunk['message']['content']
+        full_response += token
         await msg.stream_token(token)
-        
+
     # attach source after stream (FAQ only)
     if doc_info:
         msg.elements = [
@@ -288,5 +290,9 @@ async def on_message(message: cl.Message):
                 display="inline"
             )
         ]
-
     await msg.update()
+
+    # update history(3 turns)
+    history.append({"role": "user", "content": raw_query})
+    history.append({"role": "assistant", "content": full_response})
+    cl.user_session.set("history", history[-6:])
